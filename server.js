@@ -37,6 +37,7 @@ if (process.env.SMTP_USER && process.env.SMTP_PASS) {
     host: process.env.SMTP_HOST || 'smtppro.zoho.com', port: Number(process.env.SMTP_PORT || 465),
     secure: Number(process.env.SMTP_PORT || 465) === 465,
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
   });
 }
 
@@ -79,7 +80,7 @@ async function buildSigned({ name, email, sigs, ip, when, docId, ua }) {
   line('Signer ticked: "I have read and agree to all clauses, including Clause 11 (no family/spouses - professional tour)."', font, 8);
   line(`SHA-256 of unsigned document: ${ORIGINAL_SHA}`, font, 8);
   y -= 10;
-  line('Sent to: signer, danish@tristar.education, admissions@tseducation.org', font, 9);
+  line('Copies for: signer, danish@tristar.education, admissions@tseducation.org', font, 9);
   return Buffer.from(await pdf.save());
 }
 
@@ -105,8 +106,10 @@ app.post('/api/sign', async (req, res) => {
     fs.writeFileSync(path.join(OUT, file), pdf);
     fs.writeFileSync(path.join(OUT, file + '.json'), JSON.stringify({ docId, name: nm, email: em, ip, signedAtPKT: pkt(when), signedAtUTC: when.toISOString(), file }, null, 2));
     const key = crypto.createHmac('sha256', ADMIN || 'k').update(file).digest('hex').slice(0, 24);
-    let emailed = false, emailError = null;
-    if (transport) {
+    const meta = path.join(OUT, file + '.json');
+    const sendMail = async () => {
+      let emailed = false, emailError = transport ? null : 'email not configured';
+      if (transport) {
       try {
         await transport.sendMail({
           from: `"Pakistan Padel Federation e-sign" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
@@ -117,9 +120,13 @@ app.post('/api/sign', async (req, res) => {
         });
         emailed = true;
       } catch (e) { emailError = String(e.message || e); console.error('email failed', docId, emailError); }
-    }
-    console.log('SIGNED', docId, nm, em, ip, 'emailed=' + emailed);
-    res.json({ ok: true, docId, emailed, download: `/d/${encodeURIComponent(file)}?k=${key}` });
+      }
+      const j = JSON.parse(fs.readFileSync(meta)); j.emailed = emailed; j.emailError = emailError; fs.writeFileSync(meta, JSON.stringify(j, null, 2));
+    };
+    sendMail().catch(e => console.error(e));
+
+    console.log('SIGNED', docId, nm, em, ip);
+    res.json({ ok: true, docId, download: `/d/${encodeURIComponent(file)}?k=${key}` });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Could not complete signing. Please try again.' });
@@ -138,7 +145,7 @@ function admin(req, res, next) {
   next();
 }
 app.get('/admin/smtp', admin, async (req, res) => { if (!transport) return res.json({ ok: false, error: 'no transport' }); try { await transport.verify(); res.json({ ok: true }); } catch (e) { res.json({ ok: false, error: String(e.message || e) }); } });
-app.get('/admin/list', admin, (req, res) => res.json(fs.readdirSync(OUT).filter(f => f.endsWith('.pdf'))));
+app.get('/admin/list', admin, (req, res) => res.json(fs.readdirSync(OUT).filter(f => f.endsWith('.pdf') || f.endsWith('.json'))));
 app.get('/admin/file/:file', admin, (req, res) => res.sendFile(path.join(OUT, path.basename(req.params.file))));
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -159,7 +166,7 @@ button.ghost{background:#eee;color:#111;font-size:13px;padding:6px 10px;margin-t
 </style></head><body>
 <header><h1>Pakistan Padel Federation - Bond of Undertaking (Travel)</h1><p>Pakistan men's team - 5th World Cup qualifiers (Asia and Africa) - Kuwait, 26-30 October 2026</p></header>
 <main>
-<div class="card"><b>How to sign:</b> read each page, draw your signature in the box under it (all 4 pages), enter your name and email, tick the box and press Sign. A signed PDF is emailed to you and the federation.
+<div class="card"><b>How to sign:</b> read each page, draw your signature in the box under it (all 4 pages), enter your name and email, tick the box and press Sign. You can download your signed PDF straight away and the federation receives a copy.
 <div class="note" style="margin-top:8px"><b>Clause 11:</b> This is a professional tour. Family members, including spouses, are not allowed to accompany the player.</div>
 <p><a href="/static/bond.pdf" target="_blank">Open the full PDF</a></p></div>
 <div id="pages"></div>
@@ -199,7 +206,7 @@ document.getElementById('go').onclick=async()=>{
  const b=document.getElementById('go');b.disabled=true;b.textContent='Signing...';m.textContent='';
  try{const r=await fetch('/api/sign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,agree,sigs:pads.map(p=>trimmed(p.c))})});const j=await r.json();
   if(!r.ok)throw new Error(j.error||'Error');
-  const dn=document.getElementById('done');dn.style.display='block';dn.innerHTML='<h2 class="ok">Signed. Thank you.</h2><p>Document ID: <b>'+j.docId+'</b></p><p>'+(j.emailed?'A copy has been emailed to you.':'The federation has received your signed copy.')+'</p><p><a href="'+j.download+'">Download your signed PDF</a></p>';
+  const dn=document.getElementById('done');dn.style.display='block';dn.innerHTML='<h2 class="ok">Signed. Thank you.</h2><p>Document ID: <b>'+j.docId+'</b></p><p>The Pakistan Padel Federation has received your signed copy. Please download and keep your copy below.</p><p><a href="'+j.download+'">Download your signed PDF</a></p>';
   document.querySelectorAll('.card:not(#done),#pages').forEach(e=>e.style.display='none');window.scrollTo(0,0);
  }catch(e){m.textContent=e.message;b.disabled=false;b.textContent='Sign and submit'}};
 </script></body></html>`;
