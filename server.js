@@ -137,6 +137,7 @@ function admin(req, res, next) {
   if (!ADMIN || req.headers['x-admin-token'] !== ADMIN) return res.status(401).end();
   next();
 }
+app.get('/admin/smtp', admin, async (req, res) => { if (!transport) return res.json({ ok: false, error: 'no transport' }); try { await transport.verify(); res.json({ ok: true }); } catch (e) { res.json({ ok: false, error: String(e.message || e) }); } });
 app.get('/admin/list', admin, (req, res) => res.json(fs.readdirSync(OUT).filter(f => f.endsWith('.pdf'))));
 app.get('/admin/file/:file', admin, (req, res) => res.sendFile(path.join(OUT, path.basename(req.params.file))));
 
